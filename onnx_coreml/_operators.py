@@ -1515,28 +1515,25 @@ def _convert_clip(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
             name=node.name + '_clip_min',
             non_linearity='RELU',
             input_name=node.inputs[0],
-            output_name=node.inputs[0] + '_clip_min',
-        )
+            output_name=node.inputs[0] + '_clip_min')
     else:
-        builder.add_activation(
+        builder.add_unary(
             name=node.name + '_clip_min',
-            non_linearity='THRESHOLDEDRELU',
+            mode ='threshold',
             input_name=node.inputs[0],
             output_name=node.inputs[0] + '_clip_min',
-            params = min_limit
-        )
+            alpha = min_limit)
     builder.add_activation(name = node.name + '_clip_reverse', # type: ignore
                            non_linearity = 'LINEAR',
                            input_name = node.inputs[0] + '_clip_min',
                            output_name = node.inputs[0] + '_clip_reverse',
                            params = [-1, 0])
-    builder.add_activation(
+    builder.add_unary(
         name=node.name + '_clip_max',
-        non_linearity='THRESHOLDEDRELU',
+        mode ='threshold',
         input_name=node.inputs[0] + '_clip_reverse',
         output_name=node.inputs[0] + '_clip_max',
-        params = -max_limit,
-    )
+        alpha = -max_limit)
     builder.add_activation(name = node.name + '_clip_back', # type: ignore
                            non_linearity = 'LINEAR',
                            input_name = node.inputs[0] + '_clip_max',
