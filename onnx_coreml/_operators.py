@@ -852,6 +852,145 @@ def _convert_split(builder, node, graph, err):  # type: (NeuralNetworkBuilder, N
         for out_ in node.outputs:
             graph.onnx_coreml_shape_mapping[out_] = graph.onnx_coreml_shape_mapping[node.inputs[0]]
 
+def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
+
+    def _add_argmax_or_argmin(input_names, output_names, **kwargs):
+        input_name = input_names[0]
+        output_name = output_names[0]
+        if kwargs['node'].op_type == 'ArgMin':
+            kwargs['builder'].add_elementwise(name=kwargs['node'].name + '_multiply_minus_1',  # type: ignore
+                                    input_names=[input_name],
+                                    output_name=input_name + '_multiply_minus_1',
+                                    mode='MULTIPLY',
+                                    alpha=-1)
+            input_name += '_multiply_minus_1'
+        kwargs['builder'].add_reduce(name=kwargs['node'].name,
+                           input_name=input_name, output_name=output_name,
+                           axis=kwargs['coreml_axis'],
+                           mode='argmax')
+    '''
+    Conversion
+    '''
+    # axis = node.attrs.get('axis', 1)
+    # keepdims = node.attrs.get('keepdims', 0)
+    axis = 1
+    keepdims = 0
+
+    input_name = node.inputs[0]
+    output_name = input_name + '_argmax'
+    if 1:  # BADBAD
+        builder.add_softmax(name = input_name + '_softmax',
+                            input_name = input_name,
+                            output_name = input_name + '_softmax',
+                            )
+
+        builder.add_slice(name = input_name + '_slice',
+                          input_name = input_name + '_softmax',
+                          output_name = input_name + '_slice',
+                          axis='channel',
+                          start_index=1,
+                          end_index=2,
+                          stride=1)
+        use_sigmoid = 1
+        if use_sigmoid:
+            scale = 15
+            builder.add_activation(name = input_name + '_linear_norm_around_0',
+                                   non_linearity='LINEAR',
+                                   input_name = input_name + '_slice',
+                                   output_name = input_name + '_norm',
+                                   params=[scale, -0.5 * scale]
+                                   )
+            builder.add_activation(name = input_name + '_sigmoid',
+                                   non_linearity='SIGMOID',
+                                   input_name = input_name + '_norm',
+                                   output_name = input_name + '_sigmoid',
+                                   )
+            eps_for_255 = 3e-1
+            builder.add_activation(name = input_name + '_linear_norm_to_255',
+                                   non_linearity='LINEAR',
+                                   input_name = input_name + '_sigmoid',
+                                   output_name = input_name + '_norm_back',
+                                   # output_name = 'alpha',
+                                   params=[-255, eps_for_255]
+                                   )
+        else:
+            builder.add_activation(name = input_name + '_linear_norm_around_0',
+                                   non_linearity='LINEAR',
+                                   input_name = input_name + '_slice',
+                                   output_name = input_name + '_norm_back',
+                                   params=[-255, 0]
+                                   )
+        builder.add_pooling(
+            name = input_name + '_erode',
+            height = 3,
+            width = 3,
+            stride_height = 1,
+            stride_width = 1,
+            layer_type = 'MAX',
+            padding_type = 'VALID',
+            input_name = input_name + '_norm_back',
+            output_name = input_name + '_erode',
+            is_global=False,
+            padding_top=1,
+            padding_bottom=1,
+            padding_left=1,
+            padding_right=1,
+        )
+        builder.add_activation(name = input_name + '_erode_back',
+                               non_linearity='LINEAR',
+                               input_name = input_name + '_erode',
+                               output_name = 'alpha',
+                               params=[-1, 0]
+                                )
+        mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
+        # if keepdims == 1:
+            # graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp
+        graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp[:axis] + mapp[axis+1:]
+        print('========== BAD BAD =========', input_name, output_name)
+        return
+
+    if _is_input_shape_mapping_defined(node, graph):
+        mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
+        coreml_axis = mapp[axis]
+        # coreml_axis = 3
+        coreml_axis_string = "C"
+        if coreml_axis == 1: # coreml_axis corresponds to the batch dimension
+            return err.unsupported_op_configuration(builder, node, graph,"Cannot apply operation along Batch axis")
+        if coreml_axis != 0:
+            coreml_axis_string = ['C','H','W'][coreml_axis-2]
+            _add_argmax_or_argmin([input_name], [output_name], builder=builder,node=node,coreml_axis=coreml_axis_string)
+        else: # coreml_axis corresponds to the sequence dimension
+            _add_transpose_before_after(_add_argmax_or_argmin,
+                                        [input_name],
+                                        [output_name],
+                                        [1,0,2,3],
+                                        builder=builder,node=node,coreml_axis=coreml_axis_string)
+
+    else:
+        coreml_axis_string = _get_coreml_axis([axis], builder, node, graph, err)
+        if coreml_axis_string not in ['C', 'H', 'W', 'HW', 'CHW']:
+            return err.unsupported_op_configuration(builder, node, graph,
+                                                    "Unable to translate axes attribute to CoreML axis parameter for %s" % axis)
+        _add_argmax_or_argmin([input_name], [output_name], builder=builder, node=node, coreml_axis=coreml_axis_string)
+
+    '''
+    update output shape map
+    '''
+    if _is_input_shape_mapping_defined(node, graph):
+        mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
+        if keepdims == 1:
+            graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp
+        else:
+            graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp[:axis] + mapp[axis+1:]
+    builder.add_elementwise(name = input_name + '_multiply255',
+                           input_names = output_name,
+                           output_name = b'alpha',
+                           mode='MULTIPLY',
+                           alpha=255)
+    print('====================+++')
+    import coremltools
+    coremltools.models.utils.save_spec(builder.spec, './node_model333.mlmodel')
+
 def _convert_argmax(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
 
     def _add_argmax_or_argmin(input_names, output_names, **kwargs):
@@ -1496,15 +1635,29 @@ def _convert_upsample(builder, node, graph, err):  # type: (NeuralNetworkBuilder
         "bilinear": "BILINEAR",
         "linear": "BILINEAR",
     }
-    mode = mode_convert[node.attrs["mode"].decode("UTF-8")]
-    builder.add_upsample(
-        name=node.name,
-        scaling_factor_h=height_scale,
-        scaling_factor_w=width_scale,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
-        mode=mode,
-    )
+    mode = node.attrs["mode"].decode("UTF-8")
+    if mode=='nearest':
+        builder.add_upsample(
+            name=node.name,
+            scaling_factor_h=height_scale,
+            scaling_factor_w=width_scale,
+            input_name=node.inputs[0],
+            output_name=node.outputs[0],
+            mode='NN',
+        )
+    elif mode=='bilinear_align_corner':
+        builder.add_resize_bilinear(
+            name=node.name,
+            target_height=height_scale,
+            target_width=width_scale,
+            input_name=node.inputs[0],
+            output_name=node.outputs[0],
+            mode='STRICT_ALIGN_ENDPOINTS_MODE',
+        )
+    else:
+        err.unsupported_op_configuration(builder, node, graph, "Unsupported mode {} for upsample".format(mode))
+
+
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_clip(builder, node, graph, err): # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
@@ -1523,11 +1676,25 @@ def _convert_clip(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
             input_name=node.inputs[0],
             output_name=node.inputs[0] + '_clip_min',
             alpha = min_limit)
+    # Linear
     builder.add_activation(name = node.name + '_clip_reverse', # type: ignore
                            non_linearity = 'LINEAR',
                            input_name = node.inputs[0] + '_clip_min',
                            output_name = node.inputs[0] + '_clip_reverse',
                            params = [-1, 0])
+    # Multiply
+    # builder.add_elementwise(name = node.name + '_clip_reverse', type: ignore
+                           # input_names = node.inputs[0] + '_clip_min',
+                           # output_name = node.inputs[0] + '_clip_reverse',
+                           # mode='MULTIPLY',
+                           # alpha=-1)
+    # inverse
+    # builder.add_unary(
+        # name = node.name + '_clip_reverse', # type: ignore
+        # mode ='inverse',
+        # input_name = node.inputs[0] + '_clip_min',
+        # output_name = node.inputs[0] + '_clip_reverse',
+    # )
     builder.add_unary(
         name=node.name + '_clip_max',
         mode ='threshold',
@@ -1539,6 +1706,18 @@ def _convert_clip(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
                            input_name = node.inputs[0] + '_clip_max',
                            output_name = node.outputs[0],
                            params = [-1, 0])
+    # builder.add_elementwise(name = node.name + '_clip_back', # type: ignore
+                           # input_names = node.inputs[0] + '_clip_max',
+                           # output_name = node.outputs[0],
+                           # mode='MULTIPLY',
+                           # alpha=-1)
+    # inverse
+    # builder.add_unary(
+        # name = node.name + '_clip_back', # type: ignore
+        # mode ='inverse',
+        # input_name = node.inputs[0] + '_clip_max',
+        # output_name = node.outputs[0],
+    # )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_mvn(builder, node, graph, err): # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
@@ -1726,6 +1905,7 @@ def _convert_const(builder, node, graph, err): # type: (NeuralNetworkBuilder, No
 
 
 _ONNX_NODE_REGISTRY = {
+    "ATen": _convert_argmax_aten,
     "Abs": _convert_abs,
     "Add": _convert_add,
     "ArgMax": _convert_argmax,
