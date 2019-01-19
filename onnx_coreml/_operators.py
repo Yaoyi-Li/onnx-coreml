@@ -900,12 +900,58 @@ def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuil
                                    output_name = input_name + '_norm',
                                    params=[scale, -0.5 * scale]
                                    )
-            builder.add_activation(name = input_name + '_sigmoid',
-                                   non_linearity='SIGMOID',
-                                   input_name = input_name + '_norm',
-                                   output_name = input_name + '_sigmoid',
-                                   )
-            eps_for_255 = 3e-1
+            keep_negative_linear = 1
+            if not keep_negative_linear:
+                builder.add_activation(
+                    name = input_name + '_sigmoid',
+                    non_linearity='SIGMOID',
+                    input_name = input_name + '_norm',
+                    output_name = input_name + '_sigmoid',
+                )
+            else:
+                # get positive
+                builder.add_activation(
+                    name=node.name + '_clip_positive',
+                    non_linearity='RELU',
+                    input_name = input_name + '_norm',
+                    output_name = input_name + '_positive'
+                )
+                builder.add_activation(
+                    name = input_name + '_sigmoid',
+                    non_linearity='SIGMOID',
+                    input_name = input_name + '_positive',
+                    output_name = input_name + '_positive_sigmoid',
+                )
+                # get negative
+                builder.add_activation(
+                    name = input_name + '_reverse',
+                    non_linearity='LINEAR',
+                    input_name = input_name + '_norm',
+                    output_name = input_name + '_reverse',
+                    params=[-1. / scale, 0]
+                )
+                builder.add_activation(
+                    name=node.name + '_clip_negative',
+                    non_linearity='RELU',
+                    input_name = input_name + '_reverse',
+                    output_name = input_name + '_reverse_negative'
+                )
+                builder.add_activation(
+                    name = input_name + '_reverse_back',
+                    non_linearity='LINEAR',
+                    input_name = input_name + '_reverse_negative',
+                    output_name = input_name + '_negative',
+                    params=[-1., 0.]
+                )
+                # get sum
+                builder.add_elementwise(
+                    name = input_name + '_multiply255',
+                    input_names = [input_name + '_positive_sigmoid', input_name + '_negative'],
+                    output_name = input_name + '_sigmoid',
+                    mode='ADD',
+                )
+
+            eps_for_255 = 0  # 3e-1
             builder.add_activation(name = input_name + '_linear_norm_to_255',
                                    non_linearity='LINEAR',
                                    input_name = input_name + '_sigmoid',
@@ -914,7 +960,7 @@ def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuil
                                    params=[-255, eps_for_255]
                                    )
         else:
-            builder.add_activation(name = input_name + '_linear_norm_around_0',
+            builder.add_activation(name = input_name + '_linear_norm_to_255',
                                    non_linearity='LINEAR',
                                    input_name = input_name + '_slice',
                                    output_name = input_name + '_norm_back',
@@ -941,7 +987,7 @@ def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuil
                                input_name = input_name + '_erode',
                                output_name = 'alpha',
                                params=[-1, 0]
-                                )
+                               )
         mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
         # if keepdims == 1:
             # graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp

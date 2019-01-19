@@ -536,8 +536,8 @@ def convert(model,  # type: Union[onnx.ModelProto, Text]
 
     print("Translation to CoreML spec completed. Now compiling the CoreML model.")
     try:
-        #import coremltools
-        #coremltools.models.utils.save_spec(builder.spec, '/tmp/node_model.mlmodel')
+        # import coremltools
+        # coremltools.models.utils.save_spec(builder.spec, './node_model.mlmodel')
         mlmodel = MLModel(builder.spec)
     except RuntimeError as e:
         raise ValueError('Compilation failed: {}'.format(str(e)))
