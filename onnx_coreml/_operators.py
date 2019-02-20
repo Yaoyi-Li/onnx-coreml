@@ -5,12 +5,21 @@ from __future__ import unicode_literals
 
 import numpy as np
 import copy
+import hashlib
 
 from typing import Sequence, Callable, List, Tuple, Optional, Text, Any
 from coremltools.models.neural_network import NeuralNetworkBuilder  #type: ignore
 from ._graph import Node, Graph
 from coremltools.proto import NeuralNetwork_pb2 #type: ignore
 from ._error_utils import ErrorHandling
+
+global flag
+flag = 0
+
+def gen_name(s):
+    if s in ['image', 'alpha']:
+        return s
+    return hashlib.md5(s.encode()).hexdigest()[:8]
 
 '''
 General common functions
@@ -45,23 +54,23 @@ def _convert_broadcast_op(builder, node, graph, err, mode): # type: (NeuralNetwo
 
     if node.op_type == 'Sub':
         builder.add_elementwise(
-            name=node.name + '_neg',
-            input_names=[inputs[1]],
-            output_name=inputs[1] + '_neg',
+            name=gen_name(node.name + '_neg'),
+            input_names=list(map(gen_name, [inputs[1]])),
+            output_name=gen_name(inputs[1] + '_neg'),
             mode='MULTIPLY',
             alpha=-1.0
         )
         builder.add_elementwise(
-            name=node.name,
-            input_names=[inputs[0], inputs[1] + '_neg'],
-            output_name=node.outputs[0],
+            name=gen_name(node.name),
+            input_names=list(map(gen_name, [inputs[0], inputs[1] + '_neg'])),
+            output_name=gen_name(node.outputs[0]),
             mode=mode
         )
     else:
         builder.add_elementwise(
-            name=node.name,
-            input_names=inputs,
-            output_name=node.outputs[0],
+            name=gen_name(node.name),
+            input_names=list(map(gen_name, inputs)),
+            output_name=gen_name(node.outputs[0]),
             mode=mode
         )
 
@@ -132,34 +141,34 @@ def _add_transpose_before_after(layer_func, # function for layer conversion
                                 **kwargs): # type: ignore
 
     for i, input_ in enumerate(input_names):
-        kwargs['builder'].add_permute(name=kwargs['node'].name + '_input_transpose' + str(i),
+        kwargs['builder'].add_permute(name=gen_name(kwargs['node'].name + '_input_transpose' + str(i)),
                                       dim=transpose_dims,
-                                      input_name=input_,
-                                      output_name=input_ + '_transpose')
+                                      input_name=gen_name(input_),
+                                      output_name=gen_name(input_ + '_transpose'))
 
     new_input_names = [input_ + '_transpose' for input_ in input_names]
     new_output_names = [output_ + '_transpose' for output_ in output_names]
     layer_func(new_input_names, new_output_names, **kwargs)
 
     for i, output_ in enumerate(output_names):
-        kwargs['builder'].add_permute(name=kwargs['node'].name + '_output_transpose' + str(i),
+        kwargs['builder'].add_permute(name=gen_name(kwargs['node'].name + '_output_transpose' + str(i)),
                                       dim=transpose_dims,
-                                      input_name=output_ + '_transpose',
-                                      output_name=output_)
+                                      input_name=gen_name(output_ + '_transpose'),
+                                      output_name=gen_name(output_))
 
 
 def _add_inner_product(input_names, output_names, **kwargs):
     node = kwargs['node']
     builder = kwargs['builder']
     builder.add_inner_product(
-        name=node.name,
+        name=gen_name(node.name),
         W=kwargs['W'],
         b=kwargs['b'],
         input_channels=kwargs['W'].shape[1],
         output_channels=kwargs['W'].shape[0],
         has_bias=kwargs['b'] is not None,
-        input_name=input_names[0],
-        output_name=output_names[0]
+        input_name=gen_name(input_names[0]),
+        output_name=gen_name(output_names[0])
     )
 
 def _add_conv_like_op(add_func, get_params_func, params_dict,
@@ -208,9 +217,9 @@ Layer conversion functions
 
 def _convert_abs(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_unary(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         mode='abs'
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -222,10 +231,10 @@ def _convert_add(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
         if node.inputs[1] in node.input_tensors:
             second_input = np.squeeze(node.input_tensors[node.inputs[1]])
             if len(second_input.shape) == 1:
-                builder.add_bias(name=node.name,
+                builder.add_bias(name=gen_name(node.name),
                                  b=second_input,
-                                 input_name=node.inputs[0],
-                                 output_name=node.outputs[0],
+                                 input_name=gen_name(node.inputs[0]),
+                                 output_name=gen_name(node.outputs[0]),
                                  shape_bias=[second_input.shape[0]])
                 return
     '''
@@ -374,17 +383,17 @@ def _convert_conv(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
 
         if params_dict.get('is_pre_pad', False):
             builder.add_padding(
-                name=node.name + '_pre_pad',  # type: ignore
+                name=gen_name(node.name + '_pre_pad'),  # type: ignore
                 left=params_dict['pads'][1],
                 right=params_dict['pads'][3],
                 top=params_dict['pads'][0],
                 bottom=params_dict['pads'][2],
-                input_name=input_names[0],
-                output_name=input_name,
+                input_name=gen_name(input_names[0]),
+                output_name=gen_name(input_name),
                 value=0
             )
         builder.add_convolution(
-            name=node.name,
+            name=gen_name(node.name),
             kernel_channels=kc,
             output_channels=oc,
             height=params_dict['kernel_shape'][0],
@@ -399,8 +408,8 @@ def _convert_conv(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
             has_bias=params_dict['bias'] is not None,
             is_deconv=params_dict['is_deconv'],
             output_shape=params_dict['out_shape'],
-            input_name=input_name,
-            output_name=output_name,
+            input_name=gen_name(input_name),
+            output_name=gen_name(output_name),
             dilation_factors=params_dict['dilations'],
             padding_top=params_dict['pads'][0],
             padding_bottom=params_dict['pads'][2],
@@ -409,13 +418,13 @@ def _convert_conv(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
         )
         if params_dict.get('is_post_crop', False):
             builder.add_crop(
-                name=node.name + '_post_crop',  # type: ignore
+                name=gen_name(node.name + '_post_crop'),  # type: ignore
                 left=params_dict['crops'][1],
                 right=params_dict['crops'][3],
                 top=params_dict['crops'][0],
                 bottom=params_dict['crops'][2],
-                input_names=[output_name],
-                output_name=output_names[0],
+                input_names=list(map(gen_name, [output_name])),
+                output_name=gen_name(output_names[0]),
                 offset = [0,0]
             )
 
@@ -447,20 +456,20 @@ def _convert_conv(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
 
 def _convert_relu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='RELU',
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_thresholdedrelu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     alpha = node.attrs.get('alpha', 1.0)
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='THRESHOLDEDRELU',
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         params = alpha
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -484,9 +493,9 @@ def _convert_reshape(builder, node, graph, err):  # type: (NeuralNetworkBuilder,
             break
     if is_flatten:
         builder.add_flatten(
-            name=node.name,
-            input_name=node.inputs[0],
-            output_name=node.outputs[0],
+            name=gen_name(node.name),
+            input_name=gen_name(node.inputs[0]),
+            output_name=gen_name(node.outputs[0]),
             mode=0
         )
         if _is_input_shape_mapping_defined(node, graph):
@@ -511,11 +520,11 @@ def _convert_reshape(builder, node, graph, err):  # type: (NeuralNetworkBuilder,
         return err.unsupported_op_configuration(builder, node, graph, "Unsupported shape for reshape")
 
     builder.add_reshape(
-        name=node.name,
+        name=gen_name(node.name),
         target_shape=new_shape,
         mode=0,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
 
 def _convert_transpose(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
@@ -568,10 +577,10 @@ def _convert_transpose(builder, node, graph, err):  # type: (NeuralNetworkBuilde
         perm = tuple(perm)
 
     builder.add_permute(
-        name=node.name,
+        name=gen_name(node.name),
         dim=perm,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
@@ -634,7 +643,7 @@ def _convert_pool(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
         params_dict = kwargs['params_dict']
         node = kwargs['node']
         kwargs['builder'].add_pooling(
-            name=node.name,
+            name=gen_name(node.name),
             height=params_dict.get('height',1),
             width=params_dict.get('width',1),
             stride_height=params_dict.get('stride_height',1),
@@ -643,8 +652,8 @@ def _convert_pool(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
             padding_type=params_dict['padding_type'],
             exclude_pad_area=params_dict['exclude_pad_area'],
             is_global=params_dict['is_global'],
-            input_name=input_names[0],
-            output_name=output_names[0],
+            input_name=gen_name(input_names[0]),
+            output_name=gen_name(output_names[0]),
             padding_top=params_dict.get('pad_t',0),
             padding_bottom=params_dict.get('pad_b',0),
             padding_left=params_dict.get('pad_l',0),
@@ -697,14 +706,14 @@ def _convert_bn(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node
         np.ones(shape=channels, dtype=np.float32)
 
     builder.add_batchnorm(
-        name=node.name,
+        name=gen_name(node.name),
         channels=channels[0],
         gamma=scale,
         beta=bias,
         mean=mean,
         variance=var,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         epsilon=epsilon
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -715,14 +724,14 @@ def _convert_instancenorm(builder, node, graph, err):  # type: (NeuralNetworkBui
     bias = node.input_tensors[node.inputs[2]]
 
     builder.add_batchnorm(
-        name=node.name,
+        name=gen_name(node.name),
         channels=scale.shape[0],
         gamma=scale,
         beta=bias,
         compute_mean_var=True,
         instance_normalization=True,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         epsilon=epsilon
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -734,14 +743,14 @@ def _convert_mean(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
     _convert_broadcast_op(builder, node, graph, err, "AVE")
 
 def _convert_div(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
-    builder.add_unary(name=node.name + '_inverse', #type: ignore
-                      input_name=node.inputs[1],
-                      output_name=node.inputs[1] + '_inverse',
+    builder.add_unary(name=gen_name(node.name + '_inverse'), #type: ignore
+                      input_name=gen_name(node.inputs[1]),
+                      output_name=gen_name(node.inputs[1] + '_inverse'),
                       mode='inverse')
     builder.add_elementwise(
-        name=node.name,
-        input_names=[node.inputs[0], node.inputs[1] + '_inverse'],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_names=list(map(gen_name, [node.inputs[0], node.inputs[1] + '_inverse'])),
+        output_name=gen_name(node.outputs[0]),
         mode="MULTIPLY"
     )
     if _is_input_shape_mapping_defined(node, graph):
@@ -752,11 +761,11 @@ def _convert_div(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
 def _convert_leaky_relu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     alpha = node.attrs.get('alpha', 0.01)
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='LEAKYRELU',
         params=[alpha],
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
@@ -764,9 +773,9 @@ def _convert_concat(builder, node, graph, err):  # type: (NeuralNetworkBuilder, 
 
     def _add_concat(input_names, output_names, **kwargs):
         kwargs['builder'].add_elementwise(
-            name=kwargs['node'].name,
-            input_names=input_names,
-            output_name=output_names[0],
+            name=gen_name(kwargs['node'].name),
+            input_names=list(map(gen_name, input_names)),
+            output_name=gen_name(output_names[0]),
             mode=kwargs['mode']
         )
 
@@ -819,9 +828,9 @@ def _convert_split(builder, node, graph, err):  # type: (NeuralNetworkBuilder, N
 
     def _add_split(input_names, output_names, **kwargs):
         kwargs['builder'].add_split(
-            name=kwargs['node'].name,
-            input_name=input_names[0],
-            output_names=output_names
+            name=gen_name(kwargs['node'].name),
+            input_name=gen_name(input_names[0]),
+            output_names=list(map(gen_name, output_names))
         )
 
     axis = node.attrs.get("axis", 0)
@@ -853,40 +862,23 @@ def _convert_split(builder, node, graph, err):  # type: (NeuralNetworkBuilder, N
             graph.onnx_coreml_shape_mapping[out_] = graph.onnx_coreml_shape_mapping[node.inputs[0]]
 
 def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
+    global flag
+    if flag:
+        return
 
-    def _add_argmax_or_argmin(input_names, output_names, **kwargs):
-        input_name = input_names[0]
-        output_name = output_names[0]
-        if kwargs['node'].op_type == 'ArgMin':
-            kwargs['builder'].add_elementwise(name=kwargs['node'].name + '_multiply_minus_1',  # type: ignore
-                                    input_names=[input_name],
-                                    output_name=input_name + '_multiply_minus_1',
-                                    mode='MULTIPLY',
-                                    alpha=-1)
-            input_name += '_multiply_minus_1'
-        kwargs['builder'].add_reduce(name=kwargs['node'].name,
-                           input_name=input_name, output_name=output_name,
-                           axis=kwargs['coreml_axis'],
-                           mode='argmax')
-    '''
-    Conversion
-    '''
-    # axis = node.attrs.get('axis', 1)
-    # keepdims = node.attrs.get('keepdims', 0)
     axis = 1
-    keepdims = 0
 
     input_name = node.inputs[0]
     output_name = input_name + '_argmax'
     if 1:  # BADBAD
-        builder.add_softmax(name = input_name + '_softmax',
-                            input_name = input_name,
-                            output_name = input_name + '_softmax',
+        builder.add_softmax(name=gen_name( input_name + '_softmax'),
+                            input_name=gen_name( input_name),
+                            output_name=gen_name( input_name + '_softmax'),
                             )
 
-        builder.add_slice(name = input_name + '_slice',
-                          input_name = input_name + '_softmax',
-                          output_name = input_name + '_slice',
+        builder.add_slice(name=gen_name( input_name + '_slice'),
+                          input_name=gen_name( input_name + '_softmax'),
+                          output_name=gen_name( input_name + '_slice'),
                           axis='channel',
                           start_index=1,
                           end_index=2,
@@ -894,148 +886,121 @@ def _convert_argmax_aten(builder, node, graph, err):  # type: (NeuralNetworkBuil
         use_sigmoid = 1
         if use_sigmoid:
             scale = 15
-            builder.add_activation(name = input_name + '_linear_norm_around_0',
+            builder.add_activation(name=gen_name( input_name + '_linear_norm_around_0'),
                                    non_linearity='LINEAR',
-                                   input_name = input_name + '_slice',
-                                   output_name = input_name + '_norm',
+                                   input_name=gen_name( input_name + '_slice'),
+                                   output_name=gen_name( input_name + '_norm'),
                                    params=[scale, -0.5 * scale]
                                    )
-            keep_negative_linear = 1
+            keep_negative_linear = 0
             if not keep_negative_linear:
                 builder.add_activation(
-                    name = input_name + '_sigmoid',
+                    name=gen_name( input_name + '_sigmoid'),
                     non_linearity='SIGMOID',
-                    input_name = input_name + '_norm',
-                    output_name = input_name + '_sigmoid',
+                    input_name=gen_name( input_name + '_norm'),
+                    output_name=gen_name( input_name + '_sigmoid'),
                 )
             else:
                 # get positive
                 builder.add_activation(
-                    name=node.name + '_clip_positive',
+                    name=gen_name(node.name + '_clip_positive'),
                     non_linearity='RELU',
-                    input_name = input_name + '_norm',
-                    output_name = input_name + '_positive'
+                    input_name=gen_name( input_name + '_norm'),
+                    output_name=gen_name( input_name + '_positive')
                 )
                 builder.add_activation(
-                    name = input_name + '_sigmoid',
+                    name=gen_name( input_name + '_sigmoid'),
                     non_linearity='SIGMOID',
-                    input_name = input_name + '_positive',
-                    output_name = input_name + '_positive_sigmoid',
+                    input_name=gen_name( input_name + '_positive'),
+                    output_name=gen_name( input_name + '_positive_sigmoid'),
                 )
                 # get negative
                 builder.add_activation(
-                    name = input_name + '_reverse',
+                    name=gen_name( input_name + '_reverse'),
                     non_linearity='LINEAR',
-                    input_name = input_name + '_norm',
-                    output_name = input_name + '_reverse',
+                    input_name=gen_name( input_name + '_norm'),
+                    output_name=gen_name( input_name + '_reverse'),
                     params=[-1. / scale, 0]
                 )
                 builder.add_activation(
-                    name=node.name + '_clip_negative',
+                    name=gen_name(node.name + '_clip_negative'),
                     non_linearity='RELU',
-                    input_name = input_name + '_reverse',
-                    output_name = input_name + '_reverse_negative'
+                    input_name=gen_name( input_name + '_reverse'),
+                    output_name=gen_name( input_name + '_reverse_negative')
                 )
                 builder.add_activation(
-                    name = input_name + '_reverse_back',
+                    name=gen_name( input_name + '_reverse_back'),
                     non_linearity='LINEAR',
-                    input_name = input_name + '_reverse_negative',
-                    output_name = input_name + '_negative',
+                    input_name=gen_name( input_name + '_reverse_negative'),
+                    output_name=gen_name( input_name + '_negative'),
                     params=[-1., 0.]
                 )
                 # get sum
                 builder.add_elementwise(
-                    name = input_name + '_multiply255',
-                    input_names = [input_name + '_positive_sigmoid', input_name + '_negative'],
-                    output_name = input_name + '_sigmoid',
+                    name=gen_name( input_name + '_multiply255'),
+                    input_names=list(map(gen_name,  [input_name + '_positive_sigmoid', input_name + '_negative'])),
+                    output_name=gen_name( input_name + '_sigmoid'),
                     mode='ADD',
                 )
 
             eps_for_255 = 0  # 3e-1
-            builder.add_activation(name = input_name + '_linear_norm_to_255',
+            builder.add_activation(name=gen_name( input_name + '_linear_norm_to_255'),
                                    non_linearity='LINEAR',
-                                   input_name = input_name + '_sigmoid',
-                                   output_name = input_name + '_norm_back',
-                                   # output_name = 'alpha',
+                                   input_name=gen_name( input_name + '_sigmoid'),
+                                   output_name=gen_name( input_name + '_norm_back'),
+                                   # output_name=gen_name( 'alpha'),
                                    params=[-255, eps_for_255]
                                    )
         else:
-            builder.add_activation(name = input_name + '_linear_norm_to_255',
+            builder.add_activation(name=gen_name( input_name + '_linear_norm_to_255'),
                                    non_linearity='LINEAR',
-                                   input_name = input_name + '_slice',
-                                   output_name = input_name + '_norm_back',
+                                   input_name=gen_name( input_name + '_slice'),
+                                   output_name=gen_name( input_name + '_norm_back'),
                                    params=[-255, 0]
                                    )
         builder.add_pooling(
-            name = input_name + '_erode',
+            name=gen_name( input_name + '_erode'),
             height = 3,
             width = 3,
             stride_height = 1,
             stride_width = 1,
-            layer_type = 'MAX',
+            layer_type = 'AVERAGE',
             padding_type = 'VALID',
-            input_name = input_name + '_norm_back',
-            output_name = input_name + '_erode',
+            input_name=gen_name( input_name + '_norm_back'),
+            output_name=gen_name( input_name + '_erode'),
             is_global=False,
             padding_top=1,
             padding_bottom=1,
             padding_left=1,
             padding_right=1,
         )
-        builder.add_activation(name = input_name + '_erode_back',
+        builder.add_activation(name=gen_name( input_name + '_erode_back'),
                                non_linearity='LINEAR',
-                               input_name = input_name + '_erode',
-                               output_name = 'alpha',
+                               input_name=gen_name( input_name + '_erode'),
+                               output_name=gen_name( 'alpha'),
                                params=[-1, 0]
                                )
+        hw_vec = 1
+        if hw_vec:
+            builder.add_reduce(name=gen_name(input_name + '_argmax'),
+                            input_name=gen_name(input_name), output_name=gen_name(input_name + '_argmax'),
+                            axis='C',
+                            mode='argmax')
+            builder.add_reduce(name=gen_name(input_name + 'h_vec'),
+                            input_name=gen_name(input_name + '_argmax'), output_name='h_vec',
+                            axis='W',
+                            mode='max')
+            builder.add_reduce(name=gen_name(input_name + 'w_vec'),
+                            input_name=gen_name(input_name + '_argmax'), output_name='w_vec',
+                            axis='H',
+                            mode='max')
         mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
         # if keepdims == 1:
             # graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp
         graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp[:axis] + mapp[axis+1:]
         print('========== BAD BAD =========', input_name, output_name)
+        flag = 1
         return
-
-    if _is_input_shape_mapping_defined(node, graph):
-        mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
-        coreml_axis = mapp[axis]
-        # coreml_axis = 3
-        coreml_axis_string = "C"
-        if coreml_axis == 1: # coreml_axis corresponds to the batch dimension
-            return err.unsupported_op_configuration(builder, node, graph,"Cannot apply operation along Batch axis")
-        if coreml_axis != 0:
-            coreml_axis_string = ['C','H','W'][coreml_axis-2]
-            _add_argmax_or_argmin([input_name], [output_name], builder=builder,node=node,coreml_axis=coreml_axis_string)
-        else: # coreml_axis corresponds to the sequence dimension
-            _add_transpose_before_after(_add_argmax_or_argmin,
-                                        [input_name],
-                                        [output_name],
-                                        [1,0,2,3],
-                                        builder=builder,node=node,coreml_axis=coreml_axis_string)
-
-    else:
-        coreml_axis_string = _get_coreml_axis([axis], builder, node, graph, err)
-        if coreml_axis_string not in ['C', 'H', 'W', 'HW', 'CHW']:
-            return err.unsupported_op_configuration(builder, node, graph,
-                                                    "Unable to translate axes attribute to CoreML axis parameter for %s" % axis)
-        _add_argmax_or_argmin([input_name], [output_name], builder=builder, node=node, coreml_axis=coreml_axis_string)
-
-    '''
-    update output shape map
-    '''
-    if _is_input_shape_mapping_defined(node, graph):
-        mapp = graph.onnx_coreml_shape_mapping[node.inputs[0]]
-        if keepdims == 1:
-            graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp
-        else:
-            graph.onnx_coreml_shape_mapping[node.outputs[0]] = mapp[:axis] + mapp[axis+1:]
-    builder.add_elementwise(name = input_name + '_multiply255',
-                           input_names = output_name,
-                           output_name = b'alpha',
-                           mode='MULTIPLY',
-                           alpha=255)
-    print('====================+++')
-    import coremltools
-    coremltools.models.utils.save_spec(builder.spec, './node_model333.mlmodel')
 
 def _convert_argmax(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
 
@@ -1043,20 +1008,21 @@ def _convert_argmax(builder, node, graph, err):  # type: (NeuralNetworkBuilder, 
         input_name = input_names[0]
         output_name = output_names[0]
         if kwargs['node'].op_type == 'ArgMin':
-            kwargs['builder'].add_elementwise(name=kwargs['node'].name + '_multiply_minus_1',  # type: ignore
-                                    input_names=[input_name],
-                                    output_name=input_name + '_multiply_minus_1',
+            kwargs['builder'].add_elementwise(name=gen_name(kwargs['node'].name + '_multiply_minus_1'),  # type: ignore
+                                    input_names=list(map(gen_name, [input_name])),
+                                    output_name=gen_name(input_name + '_multiply_minus_1'),
                                     mode='MULTIPLY',
                                     alpha=-1)
             input_name += '_multiply_minus_1'
-        kwargs['builder'].add_reduce(name=kwargs['node'].name,
-                           input_name=input_name, output_name=output_name,
+        kwargs['builder'].add_reduce(name=gen_name(kwargs['node'].name),
+                           input_name=gen_name(input_name), output_name=output_name,
                            axis=kwargs['coreml_axis'],
                            mode='argmax')
     '''
     Conversion
     '''
     axis = node.attrs.get('axis', 0)
+    print(axis)
     keepdims = node.attrs.get('keepdims', 1)
 
     input_name = node.inputs[0]
@@ -1107,16 +1073,16 @@ def _convert_reduce(builder, node, graph, err):  # type: (NeuralNetworkBuilder, 
             if kwargs['node'].op_type == 'ReduceLogSum':
                 output_name = output_names[0] + '_before_log'
 
-        kwargs['builder'].add_reduce(name=kwargs['node'].name,
-                                     input_name=input_name, output_name=output_name,
+        kwargs['builder'].add_reduce(name=gen_name(kwargs['node'].name),
+                                     input_name=gen_name(input_name), output_name=output_name,
                                      axis=kwargs['coreml_axis'],
                                      mode=kwargs['mode'])
 
         if 'add_log' in kwargs and kwargs['add_log']:
             if node.op_type == 'ReduceLogSum':
-                kwargs['builder'].add_unary(name=kwargs['node'].name + '_log',
-                                        input_name=output_name,
-                                        output_name=output_names[0],
+                kwargs['builder'].add_unary(name=gen_name(kwargs['node'].name + '_log'),
+                                        input_name=gen_name(output_name),
+                                        output_name=gen_name(output_names[0]),
                                         mode='log')
 
     '''
@@ -1214,21 +1180,21 @@ def _convert_softmax(builder, node, graph, err):  # type: (NeuralNetworkBuilder,
 
         if node.op_type == 'LogSoftmax':
             builder.add_softmax(
-                name=node.name + '_softmax',  # type: ignore
-                input_name=node.inputs[0],
-                output_name=node.outputs[0] + '_softmax'
+                name=gen_name(node.name + '_softmax'),  # type: ignore
+                input_name=gen_name(node.inputs[0]),
+                output_name=gen_name(node.outputs[0] + '_softmax')
             )
             builder.add_unary(
-                name=node.name,
-                input_name=node.outputs[0] + '_softmax',
-                output_name=node.outputs[0],
+                name=gen_name(node.name),
+                input_name=gen_name(node.outputs[0] + '_softmax'),
+                output_name=gen_name(node.outputs[0]),
                 mode='log'
             )
         else:
             builder.add_softmax(
-                name=node.name,
-                input_name=input_names[0],
-                output_name=output_names[0]
+                name=gen_name(node.name),
+                input_name=gen_name(input_names[0]),
+                output_name=gen_name(output_names[0])
             )
 
     axis = node.attrs.get('axis', 1)
@@ -1331,9 +1297,9 @@ def _convert_lrn(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
     bias = node.attrs.get("bias", 1.0)
     size = node.attrs["size"]
     builder.add_lrn(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         alpha=alpha,
         beta=beta,
         k=bias,
@@ -1343,21 +1309,21 @@ def _convert_lrn(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
 
 def _convert_sigmoid(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='SIGMOID',
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_elu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     alpha = node.attrs.get('alpha', 1.0)
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='ELU',
         params=alpha,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
@@ -1365,16 +1331,16 @@ def _convert_selu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
     alpha = node.attrs.get('alpha', 1.6732)
     gamma = node.attrs.get('gamma', 1.0507)
     builder.add_activation(
-        name=node.name + '_elu', #type: ignore
+        name=gen_name(node.name + '_elu'), #type: ignore
         non_linearity='ELU',
         params=alpha,
-        input_name=node.inputs[0],
-        output_name=node.inputs[0] + '_elu'
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.inputs[0] + '_elu')
     )
     builder.add_elementwise(
-        name=node.name,
-        input_names=node.inputs[0] + '_elu',
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_names=list(map(gen_name, node.inputs[0] + '_elu')),
+        output_name=gen_name(node.outputs[0]),
         mode='MULTIPLY',
         alpha=gamma
     )
@@ -1383,20 +1349,20 @@ def _convert_selu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
 def _convert_prelu(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     slope = node.input_tensors[node.inputs[1]]
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='PRELU',
         params=slope,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_tanh(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity='TANH',
-        input_name=node.inputs[0],
-        output_name=node.outputs[0]
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0])
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
@@ -1438,14 +1404,14 @@ def _convert_pad(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
         node = kwargs['node']
         builder = kwargs['builder']
         builder.add_padding(
-            name=node.name,
+            name=gen_name(node.name),
             left=params_dict['pad_l'],
             right=params_dict['pad_r'],
             top=params_dict['pad_t'],
             bottom=params_dict['pad_b'],
             value=params_dict['value'],
-            input_name=input_names[0],
-            output_name=output_names[0],
+            input_name=gen_name(input_names[0]),
+            output_name=gen_name(output_names[0]),
             padding_type=params_dict['mode']
         )
 
@@ -1473,9 +1439,9 @@ def _convert_slice(builder, node, graph, err):  # type: (NeuralNetworkBuilder, N
         builder = kwargs['builder']
         params_dict = kwargs['params_dict']
         builder.add_slice(
-            name=node.name,
-            input_name=input_names[0],
-            output_name=output_names[0],
+            name=gen_name(node.name),
+            input_name=gen_name(input_names[0]),
+            output_name=gen_name(output_names[0]),
             axis=params_dict['axis'],
             start_index=params_dict['start_index'],
             end_index=params_dict['end_index'],
@@ -1542,9 +1508,9 @@ def _convert_slice(builder, node, graph, err):  # type: (NeuralNetworkBuilder, N
 
 def _convert_exp(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_unary(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         mode='exp'
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -1553,9 +1519,9 @@ def _convert_flatten(builder, node, graph, err):  # type: (NeuralNetworkBuilder,
 
     def _add_flatten(input_names, output_names, **kwargs):
         kwargs['builder'].add_flatten(
-            name=kwargs['node'].name,
-            input_name=input_names[0],
-            output_name=output_names[0],
+            name=gen_name(kwargs['node'].name),
+            input_name=gen_name(input_names[0]),
+            output_name=gen_name(output_names[0]),
             mode=0
         )
 
@@ -1588,18 +1554,18 @@ def _convert_min(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
 
 def _convert_softsign(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         non_linearity='SOFTSIGN'
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_softplus(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         non_linearity='SOFTPLUS'
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -1608,9 +1574,9 @@ def _convert_hardsigmoid(builder, node, graph, err):  # type: (NeuralNetworkBuil
     alpha = node.attrs.get('alpha', 0.2)
     beta = node.attrs.get('beta', 0.5)
     builder.add_activation(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         non_linearity='SIGMOID_HARD',
         params = [alpha, beta]
     )
@@ -1618,9 +1584,9 @@ def _convert_hardsigmoid(builder, node, graph, err):  # type: (NeuralNetworkBuil
 
 def _convert_neg(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_elementwise(
-        name=node.name,
-        input_names=node.inputs,
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_names=list(map(gen_name, node.inputs)),
+        output_name=gen_name(node.outputs[0]),
         mode='MULTIPLY',
         alpha=-1.0
     )
@@ -1628,27 +1594,27 @@ def _convert_neg(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Nod
 
 def _convert_log(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_unary(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         mode='log'
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_sqrt(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_unary(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         mode='sqrt'
     )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_reciprocal(builder, node, graph, err):  # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_unary(
-        name=node.name,
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        name=gen_name(node.name),
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         mode='inverse'
     )
     _update_shape_mapping_unchanged(node, graph, err)
@@ -1684,20 +1650,20 @@ def _convert_upsample(builder, node, graph, err):  # type: (NeuralNetworkBuilder
     mode = node.attrs["mode"].decode("UTF-8")
     if mode=='nearest':
         builder.add_upsample(
-            name=node.name,
+            name=gen_name(node.name),
             scaling_factor_h=height_scale,
             scaling_factor_w=width_scale,
-            input_name=node.inputs[0],
-            output_name=node.outputs[0],
+            input_name=gen_name(node.inputs[0]),
+            output_name=gen_name(node.outputs[0]),
             mode='NN',
         )
     elif mode=='bilinear_align_corner':
         builder.add_resize_bilinear(
-            name=node.name,
+            name=gen_name(node.name),
             target_height=height_scale,
             target_width=width_scale,
-            input_name=node.inputs[0],
-            output_name=node.outputs[0],
+            input_name=gen_name(node.inputs[0]),
+            output_name=gen_name(node.outputs[0]),
             mode='STRICT_ALIGN_ENDPOINTS_MODE',
         )
     else:
@@ -1711,65 +1677,65 @@ def _convert_clip(builder, node, graph, err): # type: (NeuralNetworkBuilder, Nod
     min_limit = node.attrs.get('min',float(-(2^16-1)))
     if min_limit==0:
         builder.add_activation(
-            name=node.name + '_clip_min',
+            name=gen_name(node.name + '_clip_min'),
             non_linearity='RELU',
-            input_name=node.inputs[0],
-            output_name=node.inputs[0] + '_clip_min')
+            input_name=gen_name(node.inputs[0]),
+            output_name=gen_name(node.inputs[0] + '_clip_min'))
     else:
         builder.add_unary(
-            name=node.name + '_clip_min',
+            name=gen_name(node.name + '_clip_min'),
             mode ='threshold',
-            input_name=node.inputs[0],
-            output_name=node.inputs[0] + '_clip_min',
+            input_name=gen_name(node.inputs[0]),
+            output_name=gen_name(node.inputs[0] + '_clip_min'),
             alpha = min_limit)
     # Linear
-    builder.add_activation(name = node.name + '_clip_reverse', # type: ignore
+    builder.add_activation(name=gen_name( node.name + '_clip_reverse'), # type: ignore
                            non_linearity = 'LINEAR',
-                           input_name = node.inputs[0] + '_clip_min',
-                           output_name = node.inputs[0] + '_clip_reverse',
+                           input_name=gen_name( node.inputs[0] + '_clip_min'),
+                           output_name=gen_name( node.inputs[0] + '_clip_reverse'),
                            params = [-1, 0])
     # Multiply
-    # builder.add_elementwise(name = node.name + '_clip_reverse', type: ignore
-                           # input_names = node.inputs[0] + '_clip_min',
-                           # output_name = node.inputs[0] + '_clip_reverse',
+    # builder.add_elementwise(name=gen_name( node.name + '_clip_reverse'), type: ignore
+                           # input_names=list(map(gen_name,  node.inputs[0] + '_clip_min')),
+                           # output_name=gen_name( node.inputs[0] + '_clip_reverse'),
                            # mode='MULTIPLY',
                            # alpha=-1)
     # inverse
     # builder.add_unary(
-        # name = node.name + '_clip_reverse', # type: ignore
+        # name=gen_name( node.name + '_clip_reverse'), # type: ignore
         # mode ='inverse',
-        # input_name = node.inputs[0] + '_clip_min',
-        # output_name = node.inputs[0] + '_clip_reverse',
+        # input_name=gen_name( node.inputs[0] + '_clip_min'),
+        # output_name=gen_name( node.inputs[0] + '_clip_reverse'),
     # )
     builder.add_unary(
-        name=node.name + '_clip_max',
+        name=gen_name(node.name + '_clip_max'),
         mode ='threshold',
-        input_name=node.inputs[0] + '_clip_reverse',
-        output_name=node.inputs[0] + '_clip_max',
+        input_name=gen_name(node.inputs[0] + '_clip_reverse'),
+        output_name=gen_name(node.inputs[0] + '_clip_max'),
         alpha = -max_limit)
-    builder.add_activation(name = node.name + '_clip_back', # type: ignore
+    builder.add_activation(name=gen_name( node.name + '_clip_back'), # type: ignore
                            non_linearity = 'LINEAR',
-                           input_name = node.inputs[0] + '_clip_max',
-                           output_name = node.outputs[0],
+                           input_name=gen_name( node.inputs[0] + '_clip_max'),
+                           output_name=gen_name( node.outputs[0]),
                            params = [-1, 0])
-    # builder.add_elementwise(name = node.name + '_clip_back', # type: ignore
+    # builder.add_elementwise(name=gen_name( node.name + '_clip_back'), # type: ignore
                            # input_names = node.inputs[0] + '_clip_max',
-                           # output_name = node.outputs[0],
+                           # output_name=gen_name( node.outputs[0]),
                            # mode='MULTIPLY',
                            # alpha=-1)
     # inverse
     # builder.add_unary(
-        # name = node.name + '_clip_back', # type: ignore
+        # name=gen_name( node.name + '_clip_back'), # type: ignore
         # mode ='inverse',
-        # input_name = node.inputs[0] + '_clip_max',
-        # output_name = node.outputs[0],
+        # input_name=gen_name( node.inputs[0] + '_clip_max'),
+        # output_name=gen_name( node.outputs[0]),
     # )
     _update_shape_mapping_unchanged(node, graph, err)
 
 def _convert_mvn(builder, node, graph, err): # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
-    builder.add_mvn(name=node.name,
-                    input_name=node.inputs[0],
-                    output_name=node.outputs[0],
+    builder.add_mvn(name=gen_name(node.name),
+                    input_name=gen_name(node.inputs[0]),
+                    output_name=gen_name(node.outputs[0]),
                     across_channels = node.attrs.get('across_channels', 0),
                     normalize_variance = node.attrs.get('normalize_variance', 1),
                     epsilon = 1e-5)
@@ -1807,14 +1773,14 @@ def _convert_lstm(builder, node, graph, err):  # type: (NeuralNetworkBuilder, No
     output_h = node.outputs[1] if len(node.outputs) > 1 else node.outputs[0] + '_h_output'
     output_c = node.outputs[2] if len(node.outputs) > 2 else node.outputs[0] + '_c_output'
 
-    builder.add_unilstm(name = node.name,
+    builder.add_unilstm(name=gen_name( node.name),
                     W_h = W_h,
                     W_x = W_x,
                     b = b,
                     hidden_size = h,
                     input_size = x,
-                    input_names= [node.inputs[0], input_h, input_c],
-                    output_names= [node.outputs[0], output_h, output_c],
+                    input_names=list(map(gen_name,  [node.inputs[0], input_h, input_c])),
+                    output_names=list(map(gen_name,  [node.outputs[0], output_h, output_c])),
                     inner_activation='SIGMOID',
                     cell_state_update_activation='TANH',
                     output_activation='TANH',
@@ -1839,19 +1805,19 @@ def _convert_custom(builder, node, graph, err): # type: (NeuralNetworkBuilder, N
         if inp not in node.input_tensors:
             inputs_.append(inp)
 
-    builder.add_custom(name=node.name,
-                       input_names=inputs_,
-                       output_names=node.outputs,
+    builder.add_custom(name=gen_name(node.name),
+                       input_names=list(map(gen_name, inputs_)),
+                       output_names=list(map(gen_name, node.outputs)),
                        custom_proto_spec=params)
 
     err.custom_layer_nodes.append(node)
 
 def _convert_identity(builder, node, graph, err): # type: (NeuralNetworkBuilder, Node, Graph, ErrorHandling) -> None
     builder.add_activation(
-        name=node.name,
+        name=gen_name(node.name),
         non_linearity = 'LINEAR',
-        input_name=node.inputs[0],
-        output_name=node.outputs[0],
+        input_name=gen_name(node.inputs[0]),
+        output_name=gen_name(node.outputs[0]),
         params=[1.0, 0.0]
     )
     if _is_input_shape_mapping_defined(node, graph):
@@ -1935,16 +1901,16 @@ def _convert_const(builder, node, graph, err): # type: (NeuralNetworkBuilder, No
 
             if add_transpose_later:
                 output_name += '_pre_transpose'
-            builder.add_load_constant(name=output_name,
-                                  output_name=output_name,
+            builder.add_load_constant(name=gen_name(output_name),
+                                  output_name=gen_name(output_name),
                                   constant_value=value.flatten(),
                                   shape=coreml_shape)
             if add_transpose_later:
                 builder.add_permute(
-                    name=name,
+                    name=gen_name(name),
                     dim=transpose_dims,
-                    input_name=output_name,
-                    output_name=name
+                    input_name=gen_name(output_name),
+                    output_name=gen_name(name)
                 )
 
             graph.constant_layers_added[output_name] = True
